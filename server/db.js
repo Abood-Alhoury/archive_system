@@ -11,6 +11,23 @@ const db = new sqlite3.Database(dbPath, (err) => {
     console.error('Error opening database', err);
   } else {
     console.log('Connected to SQLite database at:', dbPath);
+    
+    // إنشاء جدول المعاملات إذا لم يكن موجوداً
+    db.run(`
+      CREATE TABLE IF NOT EXISTS transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        archive_number TEXT,
+        applicant_name TEXT,
+        university TEXT,
+        equivalence_decision_number TEXT,
+        equivalence_decision_date TEXT,
+        eligibility_decision_number TEXT,
+        eligibility_decision_date TEXT,
+        pdf_path TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
   }
 });
 
@@ -49,11 +66,6 @@ export const getStats = async () => {
   const total = await dbGet('SELECT COUNT(*) as count FROM transactions');
   const withPdf = await dbGet('SELECT COUNT(*) as count FROM transactions WHERE pdf_path IS NOT NULL AND pdf_path != ""');
   
-  const byUnivType = await dbAll(
-    'SELECT university FROM transactions'
-  );
-
-  // Simple statistics
   return {
     total: total.count,
     withPdf: withPdf.count,
@@ -66,7 +78,6 @@ export const searchTransactions = async (filters, limit = 100, offset = 0) => {
   let query = 'SELECT * FROM transactions WHERE 1=1';
   const params = [];
 
-  // Match the prompt: search in name, archive_number, or university
   if (filters.name) {
     query += ' AND applicant_name LIKE ?';
     params.push(`%${filters.name}%`);
@@ -80,11 +91,9 @@ export const searchTransactions = async (filters, limit = 100, offset = 0) => {
     params.push(`%${filters.university}%`);
   }
 
-  // Count query for pagination
   const countQuery = query.replace('SELECT *', 'SELECT COUNT(*) as count');
   const countResult = await dbGet(countQuery, params);
 
-  // Sorting
   query += ' ORDER BY id DESC LIMIT ? OFFSET ?';
   params.push(limit, offset);
 
