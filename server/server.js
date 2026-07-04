@@ -10,244 +10,178 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = 5000;
 
-// Enable CORS and JSON body parser
 app.use(cors());
 app.use(express.json());
+// إتاحة مجلد المرفقات للقراءة
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Setup uploads folder
+// التأكد من وجود مجلد الرفع
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.mkdirSync(uploadsDir);
 }
 
-// Serve files statically
-app.use('/uploads', express.static(uploadsDir));
-
-// --- Multer Configuration with Validations ---
+// إعدادات رفع الملفات (Multer)
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/');
   },
-  filename: (req, file, cb) => {
-    // Sanitize function to remove system restricted characters (\ / : * ? " < > |)
-    const sanitize = (val) => {
-      if (!val) return '';
-      return String(val).replace(/[\\\/:\*\?"<>\|]/g, '').trim();
-    };
-
-    const archiveNum = sanitize(req.body.archive_number) || 'unknown';
-    const applicantName = sanitize(req.body.applicant_name) || 'unknown';
-    const decDate = sanitize(req.body.equivalence_decision_date);
-
-    let baseName = `${archiveNum}-${applicantName}`;
-    if (decDate) {
-      baseName += `-${decDate}`;
-    }
-
-    cb(null, `${baseName}.pdf`);
-  }
-});
-
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 5 * 1024 * 1024 // 5 MB Limit
-  },
-  fileFilter: (req, file, cb) => {
-    const filetypes = /pdf/;
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = file.mimetype === 'application/pdf';
-
-    if (extname && mimetype) {
-      return cb(null, true);
+  filename: function (req, file, cb) {
+    const ext = path.extname(file.originalname);
+    const { archive_number, applicant_name, equivalence_decision_date } = req.body;
+    
+    let fileName = 'unknown';
+    if (archive_number && applicant_name) {
+       const safeName = applicant_name.replace(/[^a-zA-Z0-9\u0600-\u06FF\s]/g, '').trim().replace(/\s+/g, '-');
+       const safeDate = (equivalence_decision_date || '').replace(/\//g, '-');
+       fileName = `${archive_number}-${safeName}${safeDate ? '-' + safeDate : ''}`;
     } else {
-      cb(new Error('الملفات المسموح برفعها هي بصيغة PDF فقط!'));
+       fileName = `doc-${Date.now()}`;
+    }
+    cb(null, `${fileName}${ext}`);
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // الحد الأقصى 5 ميغابايت
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('يسمح فقط برفع ملفات PDF!'));
     }
   }
 });
 
-// --- API Routes (Simplified, No Authentication Required) ---
+// --- مسارات الواجهة البرمجية (API Endpoints) ---
 
-// 1. Stats
 app.get('/api/stats', async (req, res) => {
   try {
     const stats = await db.getStats();
     res.json(stats);
-  } catch (error) {
-    res.status(500).json({ message: 'حدث خطأ في جلب إحصائيات النظام' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
-// 2. Transactions List & Search
 app.get('/api/transactions', async (req, res) => {
-  const { name, archive_number, university, limit, offset } = req.query;
   try {
-    const results = await db.searchTransactions(
-      { name, archive_number, university },
-      parseInt(limit) || 20,
-      parseInt(offset) || 0
-    );
-    res.json(results);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'خطأ في خادم البحث والاستعلام' });
+    const filters = {
+      name: req.query.name,
+      archive_number: req.query.archive_number,
+      university: req.query.university
+    };
+    const limit = parseInt(req.query.limit) || 100;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    const result = await db.searchTransactions(filters, limit, offset);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
-// 3. Get Transaction Details by ID
 app.get('/api/transactions/:id', async (req, res) => {
   try {
     const tx = await db.getTransactionById(req.params.id);
-    if (!tx) {
-      return res.status(404).json({ message: 'المعاملة المطلوبة غير موجودة' });
-    }
-    res.json(tx);
-  } catch (error) {
-    res.status(500).json({ message: 'خطأ في جلب تفاصيل المعاملة' });
+    if (tx) res.json(tx);
+    else res.status(404).json({ message: 'المعاملة غير موجودة' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
-// 4. Create Transaction
 app.post('/api/transactions', async (req, res) => {
-  const { archive_number, applicant_name, university } = req.body;
-  
-  if (!archive_number || !applicant_name || !university) {
-    return res.status(400).json({ message: 'حقول (رقم الأرشيف، اسم الطالب، والجامعة) إلزامية لتسجيل المعاملة.' });
-  }
-
   try {
-    const newId = await db.createTransaction(req.body);
-    res.status(201).json({ message: 'تم تسجيل المعاملة بنجاح', id: newId });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'خطأ في خادم تسجيل المعاملة' });
+    const id = await db.createTransaction(req.body);
+    res.status(201).json({ id, message: 'تم إنشاء المعاملة بنجاح' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
-// 5. Update Transaction
 app.put('/api/transactions/:id', async (req, res) => {
-  const { id } = req.params;
-  const { archive_number, applicant_name, university } = req.body;
-
-  if (!archive_number || !applicant_name || !university) {
-    return res.status(400).json({ message: 'حقول (رقم الأرشيف، اسم الطالب، والجامعة) إلزامية لتعديل المعاملة.' });
-  }
-
   try {
-    const changes = await db.updateTransaction(id, req.body);
-    if (changes === 0) {
-      return res.status(404).json({ message: 'المعاملة غير موجودة' });
-    }
-    res.json({ message: 'تم تحديث بيانات المعاملة بنجاح' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'خطأ أثناء تحديث بيانات المعاملة' });
+    const changes = await db.updateTransaction(req.params.id, req.body);
+    if (changes) res.json({ message: 'تم تحديث المعاملة بنجاح' });
+    else res.status(404).json({ message: 'المعاملة غير موجودة' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
-// 6. Delete Transaction
 app.delete('/api/transactions/:id', async (req, res) => {
-  const { id } = req.params;
   try {
-    const tx = await db.getTransactionById(id);
+    const tx = await db.getTransactionById(req.params.id);
     if (tx && tx.pdf_path) {
-      // Try to delete physical PDF file if it exists
+      const fullPath = path.join(__dirname, tx.pdf_path);
+      if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+    }
+    await db.deleteTransaction(req.params.id);
+    res.json({ message: 'تم حذف المعاملة وملفاتها بنجاح' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.post('/api/transactions/:id/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'لم يتم استلام أي ملف' });
+    }
+    const pdfPath = `/uploads/${req.file.filename}`;
+    await db.updateTransactionPdf(req.params.id, pdfPath);
+    res.json({ message: 'تم رفع الملف بنجاح', pdf_path: pdfPath });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// المسار الجديد: لحذف ملف الـ PDF فقط (بدون حذف بيانات المعاملة)
+app.delete('/api/transactions/:id/pdf', async (req, res) => {
+  try {
+    const tx = await db.getTransactionById(req.params.id);
+    if (tx && tx.pdf_path) {
       const fullPath = path.join(__dirname, tx.pdf_path);
       if (fs.existsSync(fullPath)) {
-        fs.unlinkSync(fullPath);
+        fs.unlinkSync(fullPath); // مسح الملف من المجلد
       }
+      await db.updateTransactionPdf(req.params.id, null); // تفريغ الخانة في قاعدة البيانات
+      res.json({ message: 'تم حذف وثيقة الـ PDF بنجاح' });
+    } else {
+      res.status(404).json({ message: 'لا يوجد ملف مرفق لحذفه' });
     }
-    await db.deleteTransaction(id);
-    res.json({ message: 'تم حذف المعاملة والملف المرتبط بها بنجاح' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'خطأ في حذف المعاملة' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
-// 7. Upload PDF Attachment per Transaction
-app.post('/api/transactions/:id/upload', (req, res) => {
-  const { id } = req.params;
-  
-  upload.single('file')(req, res, async (err) => {
-    if (err) {
-      return res.status(400).json({ message: err.message });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({ message: 'يرجى اختيار ملف PDF للرفع' });
-    }
-
-    try {
-      // Get old transaction to delete old PDF if replaced
-      const oldTx = await db.getTransactionById(id);
-      if (oldTx && oldTx.pdf_path) {
-        const oldFilePath = path.join(__dirname, oldTx.pdf_path);
-        if (fs.existsSync(oldFilePath)) {
-          fs.unlinkSync(oldFilePath);
-        }
-      }
-
-      const relativePath = `/uploads/${req.file.filename}`;
-      await db.updateTransactionPdf(id, relativePath);
-
-      res.status(201).json({
-        message: 'تم رفع وثيقة المعاملة وحفظها بنجاح',
-        pdf_path: relativePath
-      });
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ message: 'حدث خطأ أثناء حفظ الملف في قاعدة البيانات' });
-    }
-  });
-});
-
-// 8. Export to CSV (Excel compatible, Arabic supported)
+// مسار تصدير ملفات Excel
 app.get('/api/export/csv', async (req, res) => {
-  const { name, archive_number, university } = req.query;
-  try {
-    const results = await db.searchTransactions(
-      { name, archive_number, university },
-      10000, 
-      0
-    );
+   try {
+    const filters = {
+      name: req.query.name,
+      archive_number: req.query.archive_number,
+      university: req.query.university
+    };
+    const result = await db.searchTransactions(filters, 10000, 0);
+    
+    let csv = 'رقم الأرشيف,اسم الطالب,الجامعة,رقم قرار المعادلة,تاريخ المعادلة,رقم الأهلية,تاريخ الأهلية\n';
+    result.data.forEach(row => {
+      csv += `"${row.archive_number}","${row.applicant_name}","${row.university}","${row.equivalence_decision_number || ''}","${row.equivalence_decision_date || ''}","${row.eligibility_decision_number || ''}","${row.eligibility_decision_date || ''}"\n`;
+    });
 
-    const headers = [
-      'رقم الأرشيف',
-      'اسم الطالب',
-      'الجامعة',
-      'رقم قرار المعادلة',
-      'تاريخ صدور قرار المعادلة',
-      'رقم قرار الأهلية',
-      'تاريخ صدور قرار الأهلية',
-      'حالة المرفق'
-    ];
-
-    const csvRows = results.data.map(row => [
-      `"${(row.archive_number || '').replace(/"/g, '""')}"`,
-      `"${(row.applicant_name || '').replace(/"/g, '""')}"`,
-      `"${(row.university || '').replace(/"/g, '""')}"`,
-      `"${(row.equivalence_decision_number || '').replace(/"/g, '""')}"`,
-      `"${row.equivalence_decision_date || ''}"`,
-      `"${(row.eligibility_decision_number || '').replace(/"/g, '""')}"`,
-      `"${row.eligibility_decision_date || ''}"`,
-      `"${row.pdf_path ? 'مرفوع' : 'غير مرفوع'}"`
-    ]);
-
-    const csvContent = '\uFEFF' + [headers.join(','), ...csvRows.map(e => e.join(','))].join('\n');
-
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename=equivalency_archive_report.csv');
-    res.status(200).send(csvContent);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'حدث خطأ أثناء تصدير البيانات' });
-  }
+    res.header('Content-Type', 'text/csv; charset=utf-8');
+    res.header('Content-Disposition', 'attachment; filename="archive_export.csv"');
+    res.send('\uFEFF' + csv);
+   } catch (err) {
+     res.status(500).json({ message: err.message });
+   }
 });
 
-// Run server
 app.listen(PORT, () => {
   console.log(`Server is running in development mode on http://localhost:${PORT}`);
 });
