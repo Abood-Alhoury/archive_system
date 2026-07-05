@@ -1,33 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  LayoutDashboard, 
-  Search, 
-  FilePlus, 
-  Upload, 
-  FileText, 
-  CheckCircle, 
-  Clock, 
-  AlertCircle, 
-  Download, 
-  Printer, 
-  Eye, 
-  Trash2,
-  Edit,
-  Plus,
-  FolderOpen,
-  ChevronRight,
-  ChevronLeft,
-  X,
-  Lock,
-  LogOut
+  LayoutDashboard, Search, FilePlus, Upload, FileText, CheckCircle, 
+  Clock, AlertCircle, Download, Printer, Eye, Trash2, Edit, Plus, 
+  FolderOpen, ChevronRight, ChevronLeft, X, Lock, LogOut
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:5000/api';
+// تأكد أن الـ IP هنا هو الخاص بجهازك
+const API_BASE = `http://${window.location.hostname}:5000/api`;
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(() => {
-    return localStorage.getItem('archive_admin_session') === 'active';
+  // 🔴 التعديل الجديد: نظام الصلاحيات (userRole) بدلاً من مجرد تسجيل دخول
+  const [userRole, setUserRole] = useState(() => {
+    return localStorage.getItem('archive_user_role'); // إما 'admin' أو 'viewer' أو null
   });
+  
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
 
   const [activeTab, setActiveTab] = useState('list');
@@ -40,14 +26,9 @@ export default function App() {
   const [offset, setOffset] = useState(0);
 
   const [formData, setFormData] = useState({
-    applicant_name: '',
-    archive_number: '',
-    university: '',
-    equivalence_decision_number: '',
-    equivalence_decision_date: '',
-    eligibility_decision_number: '',
-    eligibility_decision_date: '',
-    pdf_path: ''
+    applicant_name: '', archive_number: '', university: '',
+    equivalence_decision_number: '', equivalence_decision_date: '',
+    eligibility_decision_number: '', eligibility_decision_date: '', pdf_path: ''
   });
 
   const [selectedFile, setSelectedFile] = useState(null);
@@ -61,11 +42,11 @@ export default function App() {
   const [uploadProgress, setUploadProgress] = useState(null);
 
   useEffect(() => {
-    if (isLoggedIn) {
+    if (userRole) {
       fetchStats();
       fetchTransactions();
     }
-  }, [offset, activeTab, isLoggedIn]);
+  }, [offset, activeTab, userRole]);
 
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
@@ -94,27 +75,30 @@ export default function App() {
   const fetchDetails = async (id) => {
     try {
       const res = await fetch(`${API_BASE}/transactions/${id}`);
-      if (res.ok) {
-        const data = await res.json();
-        setSelectedTx(data);
-      }
+      if (res.ok) setSelectedTx(await res.json());
     } catch (err) { console.error(err); }
   };
 
+  // 🔴 نظام الدخول المزدوج 🔴
   const handleLoginSubmit = (e) => {
     e.preventDefault();
     if (loginForm.username === 'admin' && loginForm.password === '123456') {
-      setIsLoggedIn(true);
-      localStorage.setItem('archive_admin_session', 'active');
-      showNotification('تم تسجيل الدخول بنجاح');
+      setUserRole('admin');
+      localStorage.setItem('archive_user_role', 'admin');
+      showNotification('تم تسجيل الدخول بصلاحيات الإدارة الكاملة');
+    } else if (loginForm.username === 'employee' && loginForm.password === '0000') {
+      setUserRole('viewer');
+      localStorage.setItem('archive_user_role', 'viewer');
+      showNotification('تم تسجيل الدخول بصلاحيات الاستعلام فقط');
     } else {
       showNotification('اسم المستخدم أو كلمة المرور غير صحيحة!', 'error');
     }
   };
 
   const handleLogout = () => {
-    setIsLoggedIn(false);
-    localStorage.removeItem('archive_admin_session');
+    setUserRole(null);
+    localStorage.removeItem('archive_user_role');
+    setLoginForm({ username: '', password: '' });
     showNotification('تم تسجيل الخروج');
   };
 
@@ -132,6 +116,7 @@ export default function App() {
 
   const handleFormSubmit = async (e) => {
     e.preventDefault();
+    if (userRole !== 'admin') return; // حماية إضافية
     if (!formData.applicant_name || !formData.archive_number || !formData.university) {
       showNotification('الاسم، رقم الأرشيف، واسم الجامعة هي حقول إلزامية!', 'error');
       return;
@@ -178,10 +163,7 @@ export default function App() {
     fileData.append('file', file);
 
     try {
-      const res = await fetch(`${API_BASE}/transactions/${txId}/upload`, {
-        method: 'POST',
-        body: fileData
-      });
+      const res = await fetch(`${API_BASE}/transactions/${txId}/upload`, { method: 'POST', body: fileData });
       const data = await res.json();
       if (!res.ok) showNotification(`فشل رفع الملف: ${data.message}`, 'error');
     } catch (err) {
@@ -189,16 +171,16 @@ export default function App() {
     }
   };
 
-  // 🔴 الدالة الجديدة لحذف وثيقة الـ PDF 🔴
   const handleDeletePdf = async (id) => {
+    if (userRole !== 'admin') return;
     if (!window.confirm('هل أنت متأكد من رغبتك في حذف ملف الـ PDF الحالي نهائياً؟')) return;
     try {
       const res = await fetch(`${API_BASE}/transactions/${id}/pdf`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         showNotification(data.message);
-        setFormData({ ...formData, pdf_path: null }); // لتحديث الواجهة وإخفاء زر الحذف
-        setSelectedFile(null); // تفريغ الملف المختار مسبقاً إن وجد
+        setFormData({ ...formData, pdf_path: null });
+        setSelectedFile(null);
         if (selectedTx && selectedTx.id === id) fetchDetails(id);
         fetchStats();
         fetchTransactions();
@@ -222,15 +204,12 @@ export default function App() {
   };
 
   const handleEditClick = (row) => {
+    if (userRole !== 'admin') return;
     setFormData({
-      applicant_name: row.applicant_name || '',
-      archive_number: row.archive_number || '',
-      university: row.university || '',
-      equivalence_decision_number: row.equivalence_decision_number || '',
-      equivalence_decision_date: row.equivalence_decision_date || '',
-      eligibility_decision_number: row.eligibility_decision_number || '',
-      eligibility_decision_date: row.eligibility_decision_date || '',
-      pdf_path: row.pdf_path || ''
+      applicant_name: row.applicant_name || '', archive_number: row.archive_number || '',
+      university: row.university || '', equivalence_decision_number: row.equivalence_decision_number || '',
+      equivalence_decision_date: row.equivalence_decision_date || '', eligibility_decision_number: row.eligibility_decision_number || '',
+      eligibility_decision_date: row.eligibility_decision_date || '', pdf_path: row.pdf_path || ''
     });
     setSelectedTxId(row.id);
     setSelectedFile(null);
@@ -239,6 +218,7 @@ export default function App() {
   };
 
   const handleDeleteClick = async (id) => {
+    if (userRole !== 'admin') return;
     if (!window.confirm('هل أنت متأكد من رغبتك في حذف هذه المعاملة والملف المرتبط بها نهائياً؟')) return;
     try {
       const res = await fetch(`${API_BASE}/transactions/${id}`, { method: 'DELETE' });
@@ -287,7 +267,8 @@ export default function App() {
 
   const handlePrint = () => window.print();
 
-  if (!isLoggedIn) {
+  // 🔴 شاشة تسجيل الدخول 🔴
+  if (!userRole) {
     return (
       <div className="login-container">
         <form onSubmit={handleLoginSubmit} className="login-card">
@@ -309,6 +290,11 @@ export default function App() {
             <Lock size={18} /> تسجيل الدخول
           </button>
         </form>
+        {notification && (
+          <div className={`alert alert-${notification.type}`} style={{ position: 'fixed', bottom: '24px', right: '24px', zIndex: 1000, margin: 0 }}>
+            {notification.type === 'error' ? <AlertCircle size={20} /> : <CheckCircle size={20} />} {notification.message}
+          </div>
+        )}
       </div>
     );
   }
@@ -320,21 +306,27 @@ export default function App() {
           <img src="/logo2.png" alt="شعار الوزارة" className="sidebar-logo" onError={(e) => e.target.style.display='none'} />
           <div>
             <h2 className="sidebar-title">أرشيف مجلس التعليم العالي</h2>
-            <p className="sidebar-subtitle">نظام إدارة وأرشفة المعاملات</p>
+            <p className="sidebar-subtitle">
+              {userRole === 'admin' ? 'نظام إدارة وأرشفة المعاملات' : 'نافذة الاستعلام للموظفين'}
+            </p>
           </div>
         </div>
 
         <ul className="sidebar-menu">
           <li>
             <div className={`sidebar-item ${activeTab === 'list' ? 'active' : ''}`} onClick={() => { setActiveTab('list'); setOffset(0); }}>
-              <LayoutDashboard size={20} /> <span>لوحة التحكم والأرشيف</span>
+              <LayoutDashboard size={20} /> <span>{userRole === 'admin' ? 'لوحة التحكم والأرشيف' : 'سجلات الأرشيف'}</span>
             </div>
           </li>
-          <li>
-            <div className="sidebar-item" onClick={() => { resetForm(); setModalOpen(true); }}>
-              <FilePlus size={20} /> <span>إضافة معاملة جديدة</span>
-            </div>
-          </li>
+          
+          {/* 🔴 إخفاء زر الإضافة من القائمة الجانبية إذا لم يكن مديراً 🔴 */}
+          {userRole === 'admin' && (
+            <li>
+              <div className="sidebar-item" onClick={() => { resetForm(); setModalOpen(true); }}>
+                <FilePlus size={20} /> <span>إضافة معاملة جديدة</span>
+              </div>
+            </li>
+          )}
         </ul>
 
         <div className="sidebar-footer" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '16px' }}>
@@ -347,8 +339,11 @@ export default function App() {
 
       <main className="main-content">
         <header className="navbar">
-          <h1 className="page-title">لوحة التحكم وأرشفة المعاملات</h1>
+          <h1 className="page-title">{userRole === 'admin' ? 'لوحة التحكم وأرشفة المعاملات' : 'نافذة استعلام الموظفين'}</h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: userRole === 'admin' ? 'var(--primary-green)' : '#888' }}>
+              مرحباً: {userRole === 'admin' ? 'المدير' : 'موظف الأرشيف'}
+            </span>
             <button onClick={handleLogout} className="btn btn-secondary" style={{ padding: '8px 12px', fontSize: '0.85rem' }}>
               <LogOut size={14} /> خروج
             </button>
@@ -396,7 +391,10 @@ export default function App() {
           <div className="card">
             <div className="card-header">
               <h3 className="card-title">سجلات الأرشيف المتاحة ({totalCount} سجل)</h3>
-              <button className="btn btn-primary" onClick={() => { resetForm(); setModalOpen(true); }} style={{ padding: '8px 16px' }}><Plus size={16} /> إضافة معاملة</button>
+              {/* 🔴 إخفاء زر الإضافة من هنا أيضاً للموظف 🔴 */}
+              {userRole === 'admin' && (
+                <button className="btn btn-primary" onClick={() => { resetForm(); setModalOpen(true); }} style={{ padding: '8px 16px' }}><Plus size={16} /> إضافة معاملة</button>
+              )}
             </div>
             <div className="card-body">
               <div className="table-responsive">
@@ -423,7 +421,7 @@ export default function App() {
                           <td>{row.equivalence_decision_date || '---'}</td>
                           <td>
                             {row.pdf_path ? (
-                              <a href={`http://localhost:5000${row.pdf_path}`} target="_blank" rel="noreferrer" className="badge badge-archived" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}>
+                              <a href={`http://${window.location.hostname}:5000${row.pdf_path}`} target="_blank" rel="noreferrer" className="badge badge-archived" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}>
                                 <FileText size={12} /> عرض
                               </a>
                             ) : (
@@ -433,8 +431,14 @@ export default function App() {
                           <td>
                             <div style={{ display: 'flex', gap: '6px' }}>
                               <button className="btn btn-secondary" style={{ padding: '6px 10px', fontSize: '0.8rem' }} onClick={() => openDetails(row)}><Eye size={12} /> عرض</button>
-                              <button className="btn btn-accent" style={{ padding: '6px 10px', fontSize: '0.8rem', color: '#fff' }} onClick={() => handleEditClick(row)}><Edit size={12} /> تعديل</button>
-                              <button className="btn btn-danger" style={{ padding: '6px 10px', fontSize: '0.8rem' }} onClick={() => handleDeleteClick(row.id)}><Trash2 size={12} /> حذف</button>
+                              
+                              {/* 🔴 إخفاء أزرار التعديل والحذف للموظف 🔴 */}
+                              {userRole === 'admin' && (
+                                <>
+                                  <button className="btn btn-accent" style={{ padding: '6px 10px', fontSize: '0.8rem', color: '#fff' }} onClick={() => handleEditClick(row)}><Edit size={12} /> تعديل</button>
+                                  <button className="btn btn-danger" style={{ padding: '6px 10px', fontSize: '0.8rem' }} onClick={() => handleDeleteClick(row.id)}><Trash2 size={12} /> حذف</button>
+                                </>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -459,7 +463,7 @@ export default function App() {
       </main>
 
       {/* --- نافذة الإضافة والتعديل --- */}
-      {modalOpen && (
+      {modalOpen && userRole === 'admin' && (
         <div className="modal-overlay">
           <div className="modal-content fade-in" style={{ maxWidth: '700px', maxHeight: '95vh', overflowY: 'auto' }}>
             <div className="card-header">
@@ -477,7 +481,6 @@ export default function App() {
                 <div className="form-group"><label className="form-label">تاريخ قرار الأهلية (اختياري)</label><input type="date" className="form-input" value={formData.eligibility_decision_date} onChange={(e) => setFormData({ ...formData, eligibility_decision_date: e.target.value })} /></div>
               </div>
 
-              {/* 🔴 منطقة رفع وإدارة الـ PDF في التعديل 🔴 */}
               <div style={{ background: 'var(--bg-main)', padding: '16px', borderRadius: 'var(--radius-md)', border: '1px dashed var(--accent-gold)' }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                   <Upload size={16} style={{ color: 'var(--accent-gold-dark)' }} />
@@ -488,7 +491,7 @@ export default function App() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     <div className="alert alert-success" style={{ margin: 0, padding: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{ fontWeight: 'bold' }}>✅ يوجد ملف PDF مرفق حالياً.</span>
-                      <a href={`http://localhost:5000${formData.pdf_path}`} target="_blank" rel="noreferrer" className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '0.8rem' }}>
+                      <a href={`http://${window.location.hostname}:5000${formData.pdf_path}`} target="_blank" rel="noreferrer" className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '0.8rem' }}>
                         <Eye size={14} style={{ marginRight: '4px' }} /> استعراض
                       </a>
                     </div>
@@ -514,7 +517,7 @@ export default function App() {
         </div>
       )}
 
-      {/* --- نافذة عرض التفاصيل --- */}
+      {/* --- نافذة عرض التفاصيل (متاحة للجميع) --- */}
       {detailModalOpen && selectedTx && (
         <div className="modal-overlay">
           <div className="modal-content fade-in" style={{ maxWidth: '800px' }}>
@@ -542,11 +545,15 @@ export default function App() {
                   <div className="card-body" style={{ padding: '16px' }}>
                     {selectedTx.pdf_path ? (
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <a href={`http://localhost:5000${selectedTx.pdf_path}`} target="_blank" rel="noreferrer" className="btn btn-primary"><Eye size={16} /> فتح واستعراض</a>
-                        <button className="btn btn-danger" onClick={() => handleDeletePdf(selectedTx.id)}><Trash2 size={16} /> حذف الوثيقة</button>
+                        <a href={`http://${window.location.hostname}:5000${selectedTx.pdf_path}`} target="_blank" rel="noreferrer" className="btn btn-primary"><Eye size={16} /> فتح واستعراض</a>
+                        
+                        {/* 🔴 إخفاء زر حذف الوثيقة للموظف 🔴 */}
+                        {userRole === 'admin' && (
+                          <button className="btn btn-danger" onClick={() => handleDeletePdf(selectedTx.id)}><Trash2 size={16} /> حذف الوثيقة</button>
+                        )}
                       </div>
                     ) : (
-                      <div className="alert alert-warning"><AlertCircle size={20} /> لا يوجد ملف PDF مرفق. لتتمكن من إضافة ملف، استخدم خيار "تعديل" لهذه المعاملة.</div>
+                      <div className="alert alert-warning"><AlertCircle size={20} /> لا يوجد ملف PDF مرفق. {userRole === 'admin' && 'لتتمكن من إضافة ملف، استخدم خيار "تعديل" لهذه المعاملة.'}</div>
                     )}
                   </div>
                 </div>
