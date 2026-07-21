@@ -5,8 +5,15 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// 🔴 تم إضافة إعدادات الشبكة (WAL) هنا 🔴
 const db = new sqlite3.Database(path.join(__dirname, 'database.sqlite'), (err) => {
-  if (err) console.error('خطأ في الاتصال بقاعدة البيانات:', err);
+  if (err) {
+    console.error('خطأ في الاتصال بقاعدة البيانات:', err);
+  } else {
+    // تفعيل وضع WAL لتسريع التزامن ومنع قفل قاعدة البيانات عند استخدام الشبكة
+    db.run('PRAGMA journal_mode = WAL;');
+    db.run('PRAGMA synchronous = NORMAL;');
+  }
 });
 
 db.serialize(() => {
@@ -23,7 +30,7 @@ db.serialize(() => {
     pdf_path TEXT
   )`);
 
-  // 2. جدول القرارات (مع إضافة حقل الحذف الناعم)
+  // 2. جدول القرارات (مع الحذف الناعم)
   db.run(`CREATE TABLE IF NOT EXISTS council_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     decision_number TEXT,
@@ -36,7 +43,6 @@ db.serialize(() => {
     is_deleted INTEGER DEFAULT 0
   )`);
   
-  // تحديث الجدول القديم إن كان موجوداً مسبقاً لإضافة الحقل الجديد دون أخطاء
   db.run(`ALTER TABLE council_decisions ADD COLUMN is_deleted INTEGER DEFAULT 0`, (err) => { /* سيتم تجاهل الخطأ إن كان العمود موجوداً مسبقاً */ });
 
   // 3. جدول التصنيفات الديناميكية
@@ -64,7 +70,7 @@ const all = (sql, params = []) => new Promise((resolve, reject) => {
 });
 
 // ==============================================================
-// --- القسم الأول: وظائف المعادلات (ممنوع التعديل عليه نهائياً) ---
+// --- القسم الأول: وظائف المعادلات ---
 // ==============================================================
 export const getStats = async () => {
   const total = await get('SELECT COUNT(*) as c FROM transactions');
@@ -98,10 +104,9 @@ export const deleteTransaction = async (id) => { await run('DELETE FROM transact
 
 
 // ==============================================================
-// --- القسم الثاني: وظائف قرارات مجلس التعليم العالي (مع الحذف الناعم) ---
+// --- القسم الثاني: وظائف قرارات مجلس التعليم العالي ---
 // ==============================================================
 export const checkDecisionExists = async (decision_number, decision_year, excludeId = null) => {
-  // 🔴 يتجاهل القرارات المحذوفة لكي يسمح لك بإدخال نفس الرقم إذا كنت قد حذفت القديم 🔴
   let sql = 'SELECT id FROM council_decisions WHERE decision_number = ? AND decision_year = ? AND (is_deleted = 0 OR is_deleted IS NULL)';
   let params = [decision_number, decision_year];
   if (excludeId) { sql += ' AND id != ?'; params.push(excludeId); }
@@ -109,7 +114,6 @@ export const checkDecisionExists = async (decision_number, decision_year, exclud
 };
 
 export const getDecisionsStats = async () => {
-  // 🔴 الإحصائيات تتجاهل المحذوفات 🔴
   const total = await get('SELECT COUNT(*) as c FROM council_decisions WHERE is_deleted = 0 OR is_deleted IS NULL');
   const withPdf = await get("SELECT COUNT(*) as c FROM council_decisions WHERE (is_deleted = 0 OR is_deleted IS NULL) AND pdf_path IS NOT NULL AND pdf_path != ''");
   const withoutPdf = await get("SELECT COUNT(*) as c FROM council_decisions WHERE (is_deleted = 0 OR is_deleted IS NULL) AND (pdf_path IS NULL OR pdf_path = '')");
@@ -117,7 +121,6 @@ export const getDecisionsStats = async () => {
 };
 
 export const searchDecisions = async (filters, limit, offset) => {
-  // 🔴 لا تعرض سوى القرارات غير المحذوفة 🔴
   let query = "SELECT * FROM council_decisions WHERE (is_deleted = 0 OR is_deleted IS NULL)";
   let params = [];
   if (filters.decision_number) { query += " AND decision_number LIKE ?"; params.push('%' + filters.decision_number + '%'); }
@@ -151,22 +154,18 @@ export const updateDecision = async (id, data) => {
 
 export const updateDecisionPdf = async (id, pdfPath) => { await run('UPDATE council_decisions SET pdf_path = ? WHERE id = ?', [pdfPath, id]); };
 
-// 🔴 1. دالة الحذف الناعم (تحديث الحقل فقط) 🔴
 export const deleteDecision = async (id) => {
   await run('UPDATE council_decisions SET is_deleted = 1 WHERE id = ?', [id]);
 };
 
-// 🔴 2. دالة جلب قائمة المحذوفات لسلة المهملات 🔴
 export const getDeletedDecisions = async () => {
   return await all('SELECT * FROM council_decisions WHERE is_deleted = 1 ORDER BY id DESC');
 };
 
-// 🔴 3. دالة استعادة القرار من سلة المهملات 🔴
 export const restoreDecision = async (id) => {
   await run('UPDATE council_decisions SET is_deleted = 0 WHERE id = ?', [id]);
 };
 
-// 🔴 4. دالة الحذف النهائي والأبدي للقرار من قاعدة البيانات 🔴
 export const hardDeleteDecision = async (id) => {
   await run('DELETE FROM council_decisions WHERE id = ?', [id]);
 };

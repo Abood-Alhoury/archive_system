@@ -14,6 +14,15 @@ const PORT = 5000;
 
 app.use(cors());
 app.use(express.json());
+
+// 🔴 الكود الجديد: منع التخزين المؤقت (Cache) من المتصفحات والبروكسي تماماً 🔴
+app.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -63,16 +72,11 @@ app.delete('/api/transactions/:id', async (req, res) => { try { const tx = await
 app.post('/api/transactions/:id/upload', upload.single('file'), async (req, res) => { try { if (!req.file) return res.status(400).json({ message: 'لم يتم استلام ملف' }); const pdfPath = `/uploads/${req.file.filename}`; await db.updateTransactionPdf(req.params.id, pdfPath); res.json({ message: 'تم الرفع', pdf_path: pdfPath }); } catch (err) { res.status(500).json({ message: err.message }); } });
 app.delete('/api/transactions/:id/pdf', async (req, res) => { try { const tx = await db.getTransactionById(req.params.id); if (tx && tx.pdf_path) { const fullPath = path.join(__dirname, tx.pdf_path); if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath); await db.updateTransactionPdf(req.params.id, null); res.json({ message: 'تم حذف وثيقة الـ PDF' }); } else res.status(404).json({ message: 'لا يوجد ملف' }); } catch (err) { res.status(500).json({ message: err.message }); } });
 
-
-// ==============================================================
 // --- مسارات الواجهة البرمجية لقرارات المجلس ---
-// ==============================================================
 app.get('/api/decisions/stats', async (req, res) => { try { res.json(await db.getDecisionsStats()); } catch (err) { res.status(500).json({ message: err.message }); } });
 
-// 🔴 جلب محتويات سلة المحذوفات (يجب أن يكون قبل /:id لكي لا يختلط عليه الأمر) 🔴
 app.get('/api/decisions/recycle-bin', async (req, res) => {
-  try { res.json(await db.getDeletedDecisions()); } 
-  catch (err) { res.status(500).json({ message: err.message }); }
+  try { res.json(await db.getDeletedDecisions()); } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
 app.get('/api/decisions', async (req, res) => {
@@ -104,15 +108,13 @@ app.put('/api/decisions/:id', async (req, res) => {
   try { const exists = await db.checkDecisionExists(req.body.decision_number, req.body.decision_year, req.params.id); if (exists) { return res.status(400).json({ message: `خطأ: القرار رقم ${req.body.decision_number} لسنة ${req.body.decision_year} موجود مسبقاً لمعاملة أخرى!` }); } const changes = await db.updateDecision(req.params.id, req.body); if (changes) res.json({ message: 'تم تحديث القرار بنجاح' }); else res.status(404).json({ message: 'القرار غير موجود' }); } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// 🔴 1. الحذف الناعم (نقل للسلة) 🔴
 app.delete('/api/decisions/:id', async (req, res) => {
   try {
-    await db.deleteDecision(req.params.id); // أصبح مجرد تحديث للحقل is_deleted=1
+    await db.deleteDecision(req.params.id);
     res.json({ message: 'تم نقل القرار إلى سلة المحذوفات بنجاح' });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// 🔴 2. استعادة القرار من السلة 🔴
 app.put('/api/decisions/:id/restore', async (req, res) => {
   try {
     await db.restoreDecision(req.params.id);
@@ -120,16 +122,13 @@ app.put('/api/decisions/:id/restore', async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// 🔴 3. الحذف النهائي (تفريغ من السلة والهاردديسك) 🔴
 app.delete('/api/decisions/:id/hard', async (req, res) => {
   try {
     const dec = await db.getDecisionById(req.params.id);
-    // مسح ملف الـ PDF من الهارد ديسك إن وجد
     if (dec && dec.pdf_path) {
       const fullPath = path.join(__dirname, dec.pdf_path);
       if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
     }
-    // مسح السطر من قاعدة البيانات للأبد
     await db.hardDeleteDecision(req.params.id);
     res.json({ message: 'تم حذف القرار وملفاته نهائياً ولا يمكن استرجاعه' });
   } catch (err) { res.status(500).json({ message: err.message }); }
